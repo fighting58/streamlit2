@@ -1,151 +1,98 @@
 import streamlit as st
-import pandas as pd
-import math
-from pathlib import Path
+import geopandas as gpd
+from pyproj import CRS, Transformer
+import plotly.express as px
+from shapely.geometry import Point, Polygon, MultiPolygon, LineString
+import json
+import plotly.io as pio
+import tempfile
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+def swap_xy(geometry):
+    # Transform coordinates from EPSG:5186 to EPSG:4326
+    transformer = Transformer.from_crs(CRS.from_epsg(5186), CRS.from_epsg(4326), always_xy=True)
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+    if isinstance(geometry, Point):
+        return Point(transformer.transform(geometry.x, geometry.y))
+    elif isinstance(geometry, LineString):
+        return LineString([transformer.transform(x, y) for x, y in geometry.coords])
+    elif isinstance(geometry, Polygon):
+        new_exterior = [transformer.transform(x, y) for x, y in geometry.exterior.coords]
+        new_interiors = [[transformer.transform(x, y) for x, y in interior.coords] for interior in geometry.interiors]
+        return Polygon(new_exterior, new_interiors)
+    elif isinstance(geometry, MultiPolygon):
+        new_polygons = []
+        for polygon in geometry.geoms:
+            new_exterior = [transformer.transform(x, y) for x, y in polygon.exterior.coords]
+            new_interiors = [[transformer.transform(x, y) for x, y in interior.coords] for interior in polygon.interiors]
+            new_polygons.append(Polygon(new_exterior, new_interiors))
+        return MultiPolygon(new_polygons)
+    else:
+        raise TypeError("Unsupported geometry type")
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+# Streamlit configuration
+st.title("이지목현황")
+st.write("(경기도 00시 00면 00리)")
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+# GeoJSON file upload
+# geojson_file = st.file_uploader("Upload GeoJSON file", type="geojson")
+geojson_file1 = "이지목현황.geojson"
+geojson_file2 = "본필지.geojson"
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+color_discrete_map = {
+        "제외지": "#ffffff"    
+    }
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+if geojson_file1:
+    # Read GeoJSON data using GeoPandas
+    gdf1 = gpd.read_file(geojson_file1)
+    gdf2 = gpd.read_file(geojson_file2)
+    
+    # Swap x, y coordinates
+    gdf1['geometry'] = gdf1['geometry'].apply(swap_xy)    
+    gdf2['geometry'] = gdf2['geometry'].apply(swap_xy)
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+    # Convert to EPSG:4326 (WGS84)
+    gdf1 = gdf1.to_crs(epsg=4326)
+    gdf2 = gdf2.to_crs(epsg=4326)
+    centroid = gdf1.geometry.centroid
+    center_lat = centroid.y.mean()
+    center_lon = centroid.x.mean()
+
+    geojson_data1 = json.loads(gdf1.to_json())
+    geojson_data2 = json.loads(gdf2.to_json())
+
+    # Visualize using Plotly
+    fig = px.choropleth(
+        gdf1,
+        geojson=geojson_data1,
+        locations="SYMBOL",
+        color="USAGE",
+        labels="JIBUN",
+        color_discrete_map=color_discrete_map,
+        featureidkey="properties.SYMBOL",
+        custom_data=[gdf1["JIBUN"], gdf1["SYMBOL"], gdf1['USAGE'], gdf1['AREA']],
+        center={"lat": center_lat, "lon": center_lon},
+    )
+    fig.update_geos(fitbounds="locations",visible=False)
+
+    hovertemp = '<b>%{customdata[0]} </b><i style="color:red">%{customdata[1]}</i><br>'
+    hovertemp += '<i>%{customdata[2]}</i><br>'
+    hovertemp += '<i>%{customdata[3]}㎡</i><br>'
+
+    fig.update_traces(hovertemplate=hovertemp)
+
+    # 본필지
+
+    fig.update_layout(
+        mapbox=dict(
+            style="white-bg",
+            center={"lat": center_lat, "lon": center_lon},
+            zoom=15
+        ),
+        margin={"r":0,"t":0,"l":0,"b":0}
     )
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
+    # Display the Plotly plot in Streamlit
+    st.plotly_chart(fig, user_container_width=True )
 
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[gdp_df['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[gdp_df['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
