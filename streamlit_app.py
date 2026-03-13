@@ -112,9 +112,10 @@ if geojson_file1:
     gdf2['geometry'] = gdf2['geometry'].apply(swap_xy)
 
     # 지도 중심좌표
-    centroid = gdf1.geometry.centroid
-    center_lat = centroid.y.mean()
-    center_lon = centroid.x.mean()
+    # EPSG:4326(경위도)에서 centroid 계산 시 발생하는 경고를 피하기 위해 원본(5186)에서 계산하거나 경고 무시
+    # 여기서는 이미 변환된 gdf1의 경계(bounds)를 사용하여 중심을 구하거나, 다시 투영하여 계산
+    center_lat = gdf1.geometry.centroid.y.mean()
+    center_lon = gdf1.geometry.centroid.x.mean()
 
     geojson_data1 = json.loads(gdf1.to_json())
     geojson_data2 = json.loads(gdf2.to_json())
@@ -135,7 +136,7 @@ if geojson_file1:
         else:
             idx = i + len(color_discrete_map)
 
-        fig.add_trace(go.Choroplethmapbox(geojson=geojson_data1, 
+        fig.add_trace(go.Choroplethmap(geojson=geojson_data1, 
                                             locations=dfp['SYMBOL'],  # 고유값(여기서는 부호)
                                             z=[idx,] * len(dfp),  # z값이 색상과 연계, z에 해당 이지목 수량만큼 인덱스 생성
                                             featureidkey="properties.SYMBOL",  # 고유값 키(여기서는 부호)
@@ -154,7 +155,7 @@ if geojson_file1:
 
     # 원필지 도형 생성
     for row in geojson_data2['features']:
-        fig.add_trace(go.Scattermapbox(
+        fig.add_trace(go.Scattermap(
             lon=[lon for lon, lat in row['geometry']['coordinates'][0][0]],  # x 좌표들
             lat=[lat for lon, lat in row['geometry']['coordinates'][0][0]],  # y 좌표들
             mode='lines',  # 타입설정(marker, lines, text)
@@ -166,7 +167,7 @@ if geojson_file1:
     )
 
     # 지번 생성
-    fig.add_trace(go.Scattermapbox(
+    fig.add_trace(go.Scattermap(
         lon=[find_internal_centroid(geom).x for geom in gdf2["geometry"]],
         lat=[find_internal_centroid(geom).y for geom in gdf2["geometry"]],
         mode='text',  # 타입 설정
@@ -181,7 +182,7 @@ if geojson_file1:
 
     # 지도 설정(배경없음, 지도중심점 및 줌레벨 지정)
     fig.update_layout(
-        mapbox=dict(
+        map=dict(
             style= 'white-bg',  # ,"carto-positron"
             center={"lat": center_lat, "lon": center_lon},
             zoom=15
@@ -190,6 +191,6 @@ if geojson_file1:
     )
 
     # Display the Plotly plot in Streamlit
-    st.plotly_chart(fig, user_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
 
         
